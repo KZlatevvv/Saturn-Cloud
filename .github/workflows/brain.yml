@@ -1,0 +1,64 @@
+name: Saturn Cloud Brain
+
+# Runs in the Saturn-Cloud repo (the one that hosts data.txt), NOT in the
+# SaturnAntiCheat plugin repo — copy this whole .github/workflows/brain.yml,
+# brain.py and requirements-brain.txt over there. Every 6 hours it pulls
+# recent anomaly logs from the vendor telemetry backend, nudges the
+# signature thresholds, and — only if anything actually changed — commits
+# the newly-encrypted data.txt back to this same repo, so every plugin's
+# next SignatureDownloader sync (startup, 12h auto-sync, or /ac cloud-sync)
+# picks it up.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+# default GITHUB_TOKEN needs write access to push the commit
+permissions:
+  contents: write
+
+# don't let two runs (a scheduled one + a manual one) race each other
+concurrency:
+  group: saturn-brain
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-brain.txt
+
+      - name: Run brain.py
+        env:
+          SATURN_OBF_KEY: ${{ secrets.SATURN_OBF_KEY }}
+          CLOUD_URL: ${{ secrets.CLOUD_URL }}
+          CLOUD_KEY: ${{ secrets.CLOUD_KEY }}
+          # optional tuning — safe defaults if you don't set these secrets/vars
+          LOOKBACK_HOURS: ${{ vars.LOOKBACK_HOURS || '24' }}
+          MIN_SAMPLES: ${{ vars.MIN_SAMPLES || '20' }}
+          MAX_ADJUST_PCT: ${{ vars.MAX_ADJUST_PCT || '0.10' }}
+          TIMESTAMP_COLUMN: ${{ vars.TIMESTAMP_COLUMN || 'created_at' }}
+          LOGS_TABLE: ${{ vars.LOGS_TABLE || 'anticheat_logs' }}
+        run: python brain.py
+
+      - name: Commit and push data.txt if it changed
+        run: |
+          if git diff --quiet -- data.txt; then
+            echo "No change to data.txt — nothing to commit."
+            exit 0
+          fi
+          git config user.name "saturn-cloud-brain[bot]"
+          git config user.email "saturn-cloud-brain[bot]@users.noreply.github.com"
+          git add data.txt
+          git commit -m "brain: sync signatures $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
