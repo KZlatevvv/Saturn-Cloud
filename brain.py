@@ -101,11 +101,29 @@ def fetch_anomaly_logs() -> list[dict]:
         TIMESTAMP_COLUMN: f"gte.{since}",
         "limit": "50000",
     }
+    # GET request, no body -> no Content-Type header needed (that describes
+    # the body's format; VendorTelemetryManager.java's POST calls DO send
+    # one, for the exact same reason this GET doesn't need it).
     headers = {
         "apikey": CLOUD_KEY,
         "Authorization": f"Bearer {CLOUD_KEY}",
     }
     response = requests.get(url, params=params, headers=headers, timeout=30)
+    if response.status_code in (401, 403):
+        raise RuntimeError(
+            f"{response.status_code} from the backend reading {LOGS_TABLE} — "
+            "CLOUD_KEY is valid-but-insufficiently-privileged for SELECT. "
+            "This is almost always: CLOUD_KEY is set to the SAME key the "
+            "plugin ships (insert/RPC-only by RLS design), not the "
+            "privileged (service_role) key from your backend project's API "
+            "settings. Response body: " + response.text[:300]
+        )
+    if response.status_code == 404:
+        raise RuntimeError(
+            f"404 from the backend reading {LOGS_TABLE} — table name wrong, "
+            "or it isn't in the exposed/public schema. Response body: "
+            + response.text[:300]
+        )
     response.raise_for_status()
     return response.json()
 
