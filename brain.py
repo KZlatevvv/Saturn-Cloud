@@ -51,6 +51,7 @@ import base64
 import json
 import os
 import statistics
+import time
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -242,12 +243,27 @@ def fetch_anomaly_logs() -> list[dict]:
 
 # ------------------------------------------------------------ AI consult
 
+# Free-tier inference endpoints occasionally accept a connection and the
+# request cleanly (DNS/TCP/TLS all fine) and then just never send a
+# response back -- confirmed against this exact provider during setup: a
+# single 20s wait produced 0 bytes, from two completely different networks.
+# Rather than one long wait, try a few SHORT attempts instead -- a fresh
+# attempt often lands on a different backend instance than the one that was
+# stuck, so this recovers from that specific failure mode far more often
+# than a single longer timeout would. Total worst case stays bounded either
+# way: AI_RETRIES attempts * AI_TIMEOUT_SECONDS each, plus a short pause
+# between attempts.
+AI_TIMEOUT_SECONDS = int(os.environ.get("AI_TIMEOUT_SECONDS", "10"))
+AI_RETRIES = int(os.environ.get("AI_RETRIES", "3"))
+AI_RETRY_DELAY_SECONDS = float(os.environ.get("AI_RETRY_DELAY_SECONDS", "2"))
+
+
 def consult_ai(check_key: str, reason: str, today_ratio: float,
                 history_ratios: list[float], proposed_pct: float) -> dict | None:
-    """Best-effort second opinion. Returns None on ANY failure (no key, network
-    error, timeout, unparseable response) -- callers must treat that as "no
-    opinion available," never as an error. See the AI_API_KEY comment above
-    for the full reasoning on why this can only ever make analyze() MORE
+    """Best-effort second opinion. Returns None on ANY failure -- including
+    after exhausting all retries -- callers must treat that as "no opinion
+    available," never as an error. See the AI_API_KEY comment above for the
+    full reasoning on why this can only ever make analyze() MORE
     conservative, never less; this function only gathers the AI's raw
     opinion, the clamp that actually enforces that guarantee lives in
     analyze() itself so it can never be bypassed by a change here alone."""
@@ -255,7 +271,7 @@ def consult_ai(check_key: str, reason: str, today_ratio: float,
         return None
     prompt = (
         f"You are a conservative advisor reviewing an anti-cheat detection "
-        f"threshold change before it goes live on real servers.\n\n"
+        f"threshold change before it goes live on real servers. Be concise.\n\n"
         f"Check: {check_key}\n"
         f"Today's flags-per-distinct-player ratio: {today_ratio:.2f}\n"
         f"This check's own historical ratios (older windows, same check): "
@@ -268,48 +284,58 @@ def consult_ai(check_key: str, reason: str, today_ratio: float,
         f"legitimate movement/timing edge cases) rather than a real "
         f"coordinated wave of cheating? You may only ever recommend the SAME "
         f"or a SMALLER adjustment than proposed -- never a larger one; if "
-        f"you are unsure, recommend a smaller number or zero.\n\n"
-        f"Respond with ONLY a JSON object, no other text, no markdown "
-        f"fences:\n"
+        f"unsure, recommend a smaller number or zero.\n\n"
+        f"Respond with ONLY this JSON object, nothing else, no markdown "
+        f"fences, no explanation outside the JSON:\n"
         f'{{"agree": true or false, "suggested_pct": <number from 0 to '
         f'{proposed_pct}>, "reasoning": "<one short sentence>"}}'
     )
-    try:
-        response = requests.post(
-            AI_API_URL,
-            headers={
-                "Authorization": f"Bearer {AI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": AI_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.2,
-                "max_tokens": 200,
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        # models sometimes add stray text or markdown fences around the JSON
-        # despite instructions -- extract the outermost {...} defensively
-        start, end = content.find("{"), content.rfind("}")
-        if start == -1 or end == -1:
-            print(f"WARNING: AI response for {check_key} had no JSON object "
-                  f"in it -- ignoring, statistics decide alone this run.")
-            return None
-        verdict = json.loads(content[start:end + 1])
-        if "suggested_pct" not in verdict or not isinstance(
-                verdict["suggested_pct"], (int, float)):
-            print(f"WARNING: AI response for {check_key} was missing a "
-                  f"usable suggested_pct -- ignoring, statistics decide "
-                  f"alone this run.")
-            return None
-        return verdict
-    except Exception as ex:
-        print(f"WARNING: AI consultation for {check_key} failed ({ex}) -- "
-              f"falling back to the statistical decision alone, unaffected.")
-        return None
+    last_error = None
+    for attempt in range(1, AI_RETRIES + 1):
+        try:
+            response = requests.post(
+                AI_API_URL,
+                headers={
+                    "Authorization": f"Bearer {AI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": AI_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "max_tokens": 200,
+                },
+                timeout=AI_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+            # models sometimes add stray text or markdown fences around the
+            # JSON despite instructions -- extract the outermost {...}
+            start, end = content.find("{"), content.rfind("}")
+            if start == -1 or end == -1:
+                print(f"WARNING: AI response for {check_key} had no JSON "
+                      f"object in it -- ignoring, statistics decide alone "
+                      f"this run.")
+                return None
+            verdict = json.loads(content[start:end + 1])
+            if "suggested_pct" not in verdict or not isinstance(
+                    verdict["suggested_pct"], (int, float)):
+                print(f"WARNING: AI response for {check_key} was missing a "
+                      f"usable suggested_pct -- ignoring, statistics decide "
+                      f"alone this run.")
+                return None
+            return verdict
+        except Exception as ex:
+            last_error = ex
+            if attempt < AI_RETRIES:
+                print(f"WARNING: AI consultation for {check_key} attempt "
+                      f"{attempt}/{AI_RETRIES} failed ({ex}) -- retrying in "
+                      f"{AI_RETRY_DELAY_SECONDS:.0f}s.")
+                time.sleep(AI_RETRY_DELAY_SECONDS)
+    print(f"WARNING: AI consultation for {check_key} failed after "
+          f"{AI_RETRIES} attempts ({last_error}) -- falling back to the "
+          f"statistical decision alone, unaffected.")
+    return None
 
 
 # ---------------------------------------------------------------- analysis
