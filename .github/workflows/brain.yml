@@ -1,10 +1,10 @@
 name: Saturn Cloud Brain
 
 # Runs in the Saturn-Cloud repo (the one that hosts data.txt), NOT in the
-# SaturnAntiCheat plugin repo — copy this whole .github/workflows/brain.yml,
+# SaturnAntiCheat plugin repo  -  copy this whole .github/workflows/brain.yml,
 # brain.py and requirements-brain.txt over there. Every 6 hours it pulls
 # recent anomaly logs from the vendor telemetry backend, nudges the
-# signature thresholds, and — only if anything actually changed — commits
+# signature thresholds, and  -  only if anything actually changed  -  commits
 # the newly-encrypted data.txt back to this same repo, so every plugin's
 # next SignatureDownloader sync (startup, 12h auto-sync, or /ac cloud-sync)
 # picks it up.
@@ -43,22 +43,52 @@ jobs:
           SATURN_OBF_KEY: ${{ secrets.SATURN_OBF_KEY }}
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
           CLOUD_KEY: ${{ secrets.CLOUD_KEY }}
-          # optional tuning — safe defaults if you don't set these secrets/vars
+          # optional tuning  -  safe defaults if you don't set these secrets/vars
           LOOKBACK_HOURS: ${{ vars.LOOKBACK_HOURS || '24' }}
+          HISTORY_WINDOWS: ${{ vars.HISTORY_WINDOWS || '6' }}
+          MIN_HISTORY_WINDOWS: ${{ vars.MIN_HISTORY_WINDOWS || '3' }}
           MIN_SAMPLES: ${{ vars.MIN_SAMPLES || '20' }}
+          MIN_DISTINCT_PLAYERS: ${{ vars.MIN_DISTINCT_PLAYERS || '5' }}
+          ANOMALY_Z: ${{ vars.ANOMALY_Z || '1.25' }}
           MAX_ADJUST_PCT: ${{ vars.MAX_ADJUST_PCT || '0.10' }}
+          # sanity rail  -  how many times total a single check can be
+          # auto-loosened before the brain stops and asks for a human to
+          # review it (see brain_state.json, and analyze()'s own comments)
+          MAX_ADJUST_COUNT: ${{ vars.MAX_ADJUST_COUNT || '20' }}
           TIMESTAMP_COLUMN: ${{ vars.TIMESTAMP_COLUMN || 'created_at' }}
           LOGS_TABLE: ${{ vars.LOGS_TABLE || 'anticheat_logs' }}
+          # optional  -  leave the secret unset entirely to disable Discord
+          # notifications; brain.py treats a missing webhook as a no-op,
+          # never as an error
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # optional  -  AI second opinion on statistical adjustments. Leave
+          # AI_API_KEY unset to disable entirely (pure statistics, exactly
+          # as before this existed). Defaults target NVIDIA's free NIM tier
+          # (build.nvidia.com) but AI_API_URL/AI_MODEL work with any
+          # OpenAI-compatible provider. The AI can only make an adjustment
+          # SMALLER than what statistics already proposed, never larger  -
+          # see brain.py's AI_API_KEY comment for the full safety reasoning.
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_URL: ${{ vars.AI_API_URL || 'https://integrate.api.nvidia.com/v1/chat/completions' }}
+          AI_MODEL: ${{ vars.AI_MODEL || 'nvidia/llama-3.1-nemotron-nano-8b-v1' }}
+          MAX_AI_CONSULTATIONS: ${{ vars.MAX_AI_CONSULTATIONS || '20' }}
         run: python brain.py
 
-      - name: Commit and push data.txt if it changed
+      - name: Commit and push data.txt / brain_state.json if they changed
         run: |
-          if git diff --quiet -- data.txt; then
-            echo "No change to data.txt — nothing to commit."
+          if git diff --quiet -- data.txt brain_state.json; then
+            echo "No change to data.txt or brain_state.json  -  nothing to commit."
             exit 0
           fi
           git config user.name "saturn-cloud-brain[bot]"
           git config user.email "saturn-cloud-brain[bot]@users.noreply.github.com"
-          git add data.txt
-          git commit -m "brain: sync signatures $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git add data.txt brain_state.json
+          # brain_run_summary.txt is always written fresh each run (never
+          # committed itself, just used here as the commit message body)  - 
+          # falls back to a plain timestamp if it's somehow missing/empty
+          if [ -s brain_run_summary.txt ]; then
+            git commit -F brain_run_summary.txt
+          else
+            git commit -m "brain: sync signatures $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          fi
           git push
