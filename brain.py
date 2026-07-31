@@ -19,9 +19,10 @@ repo (see .github/workflows/brain.yml). Every run:
   4. Nudges the baseline thresholds based on those logs -- each check is
      compared against ITS OWN historical flag-rate, not one flat threshold
      shared by all 200+ checks (see analyze() for the full reasoning and its
-     honest limits; this is still not a trained model). If AI_API_KEY is
-     set, every check the statistics decide to loosen also gets a second
-     opinion from an LLM (see consult_ai()) -- the AI can only talk that
+     honest limits; this is still not a trained model). If AI_API_KEY,
+     AI_API_URL and AI_MODEL are all set, every check the statistics decide
+     to loosen also gets a second opinion from an LLM (see consult_ai()) --
+     the AI can only talk that
      adjustment DOWN, never up; it is structurally incapable of making the
      brain more aggressive than plain statistics already would have been.
      All of this is subject to the sanity rails: a hard per-check
@@ -120,20 +121,16 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 # falls back to the plain statistical decision -- an AI outage or a bad key
 # can never block a run or crash it, it just means one fewer opinion.
 #
-# Defaults target NVIDIA's free NIM tier (build.nvidia.com) via its
-# OpenAI-compatible /chat/completions endpoint, but AI_API_URL/AI_MODEL work
-# with any OpenAI-compatible provider -- swap them freely.
+# Works with any OpenAI-compatible /chat/completions provider -- which one
+# is deliberately NOT hardcoded here or given a default, the same way the
+# detection thresholds elsewhere in this project are never shipped in the
+# clear in a public repo. All three of AI_API_KEY/AI_API_URL/AI_MODEL must
+# be supplied via secrets (see brain.yml) for this feature to activate; if
+# any are missing, the AI step is simply skipped -- same graceful no-op as
+# every other failure mode here, never a hard requirement.
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
-AI_API_URL = os.environ.get(
-    "AI_API_URL", "https://integrate.api.nvidia.com/v1/chat/completions")
-# nvidia/llama-3.1-nemotron-nano-8b-v1 -- NVIDIA's own small model, tuned
-# specifically for reliable instruction-following/reasoning at 8B params
-# (verified live on build.nvidia.com, free endpoint, 131K context). This
-# task is a narrow, structured-JSON judgment call on a short prompt, not
-# open-ended generation -- a small, fast, instruction-tuned model is the
-# right fit; one of the huge flagship models on that catalog would just be
-# slower and eat more of the free-tier rate limit for no real benefit here.
-AI_MODEL = os.environ.get("AI_MODEL", "nvidia/llama-3.1-nemotron-nano-8b-v1")
+AI_API_URL = os.environ.get("AI_API_URL", "")
+AI_MODEL = os.environ.get("AI_MODEL", "")
 # defensive cap on how many AI calls a single run will ever make, regardless
 # of how many checks look anomalous at once -- keeps a pathological run
 # (e.g. many checks tripping simultaneously during a real incident) from
@@ -254,7 +251,7 @@ def consult_ai(check_key: str, reason: str, today_ratio: float,
     conservative, never less; this function only gathers the AI's raw
     opinion, the clamp that actually enforces that guarantee lives in
     analyze() itself so it can never be bypassed by a change here alone."""
-    if not AI_API_KEY:
+    if not AI_API_KEY or not AI_API_URL or not AI_MODEL:
         return None
     prompt = (
         f"You are a conservative advisor reviewing an anti-cheat detection "
@@ -435,7 +432,7 @@ def analyze(baseline: dict, logs: list[dict], state: dict) -> tuple[dict, dict, 
         # the AI says can escape it even if consult_ai()'s own prompt-level
         # instruction were somehow ignored by the model.
         effective_pct = MAX_ADJUST_PCT
-        if AI_API_KEY and ai_consultations_used < MAX_AI_CONSULTATIONS:
+        if AI_API_KEY and AI_API_URL and AI_MODEL and ai_consultations_used < MAX_AI_CONSULTATIONS:
             ai_consultations_used += 1
             verdict = consult_ai(check_key, reason, today_ratio, history_ratios, MAX_ADJUST_PCT)
             if verdict is not None:
