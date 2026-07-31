@@ -62,15 +62,19 @@ jobs:
           # never as an error
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           # optional  -  AI second opinion on statistical adjustments. Leave
-          # AI_API_KEY unset to disable entirely (pure statistics, exactly
-          # as before this existed). Defaults target NVIDIA's free NIM tier
-          # (build.nvidia.com) but AI_API_URL/AI_MODEL work with any
-          # OpenAI-compatible provider. The AI can only make an adjustment
-          # SMALLER than what statistics already proposed, never larger  -
-          # see brain.py's AI_API_KEY comment for the full safety reasoning.
+          # any of the three unset to disable entirely (pure statistics,
+          # exactly as before this existed) -- all three are required
+          # together. Works with any OpenAI-compatible /chat/completions
+          # provider; which one is deliberately kept out of this file (all
+          # three as secrets, not vars) the same way detection thresholds
+          # are never shipped in the clear in this public repo -- see
+          # README for where to get a free key and what to put here. The
+          # AI can only make an adjustment SMALLER than what statistics
+          # already proposed, never larger -- see brain.py's AI_API_KEY
+          # comment for the full safety reasoning.
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
-          AI_API_URL: ${{ vars.AI_API_URL || 'https://integrate.api.nvidia.com/v1/chat/completions' }}
-          AI_MODEL: ${{ vars.AI_MODEL || 'nvidia/llama-3.1-nemotron-nano-8b-v1' }}
+          AI_API_URL: ${{ secrets.AI_API_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
           MAX_AI_CONSULTATIONS: ${{ vars.MAX_AI_CONSULTATIONS || '20' }}
         run: python brain.py
 
