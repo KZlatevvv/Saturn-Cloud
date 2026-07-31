@@ -76,6 +76,12 @@ jobs:
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
           MAX_AI_CONSULTATIONS: ${{ vars.MAX_AI_CONSULTATIONS || '20' }}
+          # free-tier endpoints can accept a request and then just never
+          # respond -- a few short attempts recover from that far more
+          # often than one long wait (see consult_ai()'s own comment)
+          AI_TIMEOUT_SECONDS: ${{ vars.AI_TIMEOUT_SECONDS || '10' }}
+          AI_RETRIES: ${{ vars.AI_RETRIES || '3' }}
+          AI_RETRY_DELAY_SECONDS: ${{ vars.AI_RETRY_DELAY_SECONDS || '2' }}
         run: python brain.py
 
       - name: Commit and push data.txt / brain_state.json if they changed
