@@ -303,12 +303,30 @@ def consult_ai(check_key: str, reason: str, today_ratio: float,
                     "model": AI_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
-                    "max_tokens": 200,
+                    # some providers (Gemini 3+, o-series, etc.) spend part of
+                    # this budget on an internal "thinking" pass before the
+                    # visible answer -- confirmed against Gemini directly:
+                    # max_tokens=200 was entirely consumed by thinking, 0
+                    # tokens left for the actual JSON (finish_reason="length",
+                    # empty message.content). 1500 leaves real headroom for
+                    # both; reasoning_effort keeps the thinking pass itself
+                    # short on models that support it. Providers that don't
+                    # recognize either field (plain OpenAI-compatible APIs
+                    # like NVIDIA's) silently ignore them per the standard --
+                    # safe to send unconditionally.
+                    "max_tokens": 1500,
+                    "reasoning_effort": "minimal",
                 },
                 timeout=AI_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
+            content = response.json()["choices"][0]["message"].get("content") or ""
+            if not content:
+                print(f"WARNING: AI response for {check_key} had empty content "
+                      f"(finish_reason may indicate the token budget ran out "
+                      f"before a visible answer) -- ignoring, statistics "
+                      f"decide alone this run.")
+                return None
             # models sometimes add stray text or markdown fences around the
             # JSON despite instructions -- extract the outermost {...}
             start, end = content.find("{"), content.rfind("}")
