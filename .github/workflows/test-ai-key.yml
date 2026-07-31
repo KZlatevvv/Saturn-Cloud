@@ -2,7 +2,8 @@ name: Connectivity Test
 
 # Временен, еднократен workflow -- само за да провериш, че връзката работи.
 # Пусни го веднъж ръчно, виж резултата, после спокойно изтрий този файл --
-# не е част от истинската brain.py автоматизация.
+# не е част от истинската brain.py автоматизация. Последната стъпка прави
+# СЪЩОТО каквото прави brain.py самото (3 кратки опита вместо 1 дълъг).
 
 on:
   workflow_dispatch: {}
@@ -22,18 +23,31 @@ jobs:
         run: |
           echo "AI_API_KEY length: ${#AI_API_KEY}"
           echo "AI_API_URL length: ${#AI_API_URL}"
-          echo "AI_API_URL value: $AI_API_URL"
           echo "AI_MODEL length: ${#AI_MODEL}"
-          echo "AI_MODEL value: $AI_MODEL"
 
-      - name: Call API (verbose, with a hard 20s timeout)
+      - name: Call API -- 3 short attempts, same as brain.py's consult_ai()
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
         run: |
-          curl -sS -v --max-time 20 -w "\n---HTTP_STATUS:%{http_code} TIME:%{time_total}s---\n" \
-            "$AI_API_URL" \
-            -H "Authorization: Bearer $AI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"model\": \"$AI_MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with exactly one word: works\"}], \"max_tokens\": 10}"
+          for attempt in 1 2 3; do
+            echo "=== attempt $attempt/3 ==="
+            http_code=$(curl -sS --max-time 10 -w "%{http_code}" \
+              -o /tmp/response.json \
+              "$AI_API_URL" \
+              -H "Authorization: Bearer $AI_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"model\": \"$AI_MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with exactly one word: works\"}], \"max_tokens\": 10}")
+            echo "HTTP_STATUS: $http_code"
+            if [ "$http_code" = "200" ]; then
+              echo "SUCCESS on attempt $attempt:"
+              cat /tmp/response.json
+              exit 0
+            fi
+            echo "attempt $attempt failed, response body (if any):"
+            cat /tmp/response.json 2>/dev/null || echo "(none)"
+            sleep 2
+          done
+          echo "All 3 attempts failed."
+          exit 1
