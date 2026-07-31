@@ -1,0 +1,24 @@
+name: Connectivity Test
+
+# Временен, еднократен workflow -- само за да провериш, че връзката работи.
+# Пусни го веднъж ръчно, виж резултата, после спокойно изтрий този файл --
+# не е част от истинската brain.py автоматизация.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call API
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_URL: ${{ secrets.AI_API_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+        run: |
+          curl -sS -w "\n---HTTP_STATUS:%{http_code} TIME:%{time_total}s---\n" \
+            "$AI_API_URL" \
+            -H "Authorization: Bearer $AI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\": \"$AI_MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with exactly one word: works\"}], \"max_tokens\": 10}"
