@@ -11,13 +11,28 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Call API
+      - name: Sanity check -- can this runner reach the internet at all
+        run: curl -sS --max-time 15 -w "\n---HTTP_STATUS:%{http_code}---\n" https://httpbin.org/get
+
+      - name: Check secrets are actually set (lengths only, never the values)
         env:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AI_API_URL: ${{ secrets.AI_API_URL }}
           AI_MODEL: ${{ secrets.AI_MODEL }}
         run: |
-          curl -sS -w "\n---HTTP_STATUS:%{http_code} TIME:%{time_total}s---\n" \
+          echo "AI_API_KEY length: ${#AI_API_KEY}"
+          echo "AI_API_URL length: ${#AI_API_URL}"
+          echo "AI_API_URL value: $AI_API_URL"
+          echo "AI_MODEL length: ${#AI_MODEL}"
+          echo "AI_MODEL value: $AI_MODEL"
+
+      - name: Call API (verbose, with a hard 20s timeout)
+        env:
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_API_URL: ${{ secrets.AI_API_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+        run: |
+          curl -sS -v --max-time 20 -w "\n---HTTP_STATUS:%{http_code} TIME:%{time_total}s---\n" \
             "$AI_API_URL" \
             -H "Authorization: Bearer $AI_API_KEY" \
             -H "Content-Type: application/json" \
